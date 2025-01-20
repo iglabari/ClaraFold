@@ -1,6 +1,14 @@
 # ClaraFold
 A novel transformer-based approach designed to refine noisy RNA secondary structure predictions.
 
+# Prerequisites
+The following dependencie is required to run ClaraFold:
+
+torchtext==0.12
+
+You can install the required package using pip:
+pip install torchtext==0.12
+
 # Model Execution
 To test the model, you need to run the Python script in the directory containing the four required *.pt files, which include the transformer models (T1 and T2) and the vocabulary files for input (src) and output (tgt).
 
