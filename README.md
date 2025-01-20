@@ -46,14 +46,5 @@ During execution, the program will display all ongoing operations in real-time. 
 *Generated for each molecule tested by the model
 *Used for model evaluation and analysis
 
-# File Structure
-
-.
-├── *.pt                           # Model and vocabulary files
-├── complete_process.py            # Main execution script
-├── example_of_one_sequence.txt    # Single molecule example
-├── example_of_four_sequences.txt  # Multiple molecule example
-└── output/
-    ├── sequence_xx.txt           # Individual predictions
-    ├── test_results.txt         # All predictions
-    └── for_quantify.txt         # Structured output for analysis
+# Contact
+For any comments or questions please contact garcialabari@cifasis-conicet.gov.ar
