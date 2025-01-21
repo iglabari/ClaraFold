@@ -14,11 +14,11 @@ To test the model, you need to run the Python script in the directory containing
 
 # Running the Model
 Execute the following command in your terminal:
-python complete_process.py input.txt
+python ClaraFold.py input.txt
 
 The input file (which can have any name) must follow this specific format:
 
-sequence
+sequence //
 secondary_structure
 
 For multiple molecules, use this format:
