@@ -40,6 +40,7 @@ Each sequence must be immediately followed by its corresponding secondary struct
 # Input Examples
 Two sample input files are provided:
 example_of_one_sequence.txt: Contains a single molecule
+
 example_of_four_sequences.txt: Contains four molecules
 
 # Execution Process
@@ -47,15 +48,19 @@ During execution, the program will display all ongoing operations in real-time. 
 
 1-sequence_xx.txt
 *Individual output files for each processed sequence
+
 *Generated sequentially during execution
 
 2-test_results.txt
 *Contains all predictions made by ClaraFold
+
 *Comprehensive record of model outputs
 
 3-for_quantify.txt
 *Structured output containing: Input sequence; 2D structure ; ClaraFold prediction
+
 *Generated for each molecule tested by the model
+
 *Used for model evaluation and analysis
 
 # Contact
