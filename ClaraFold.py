@@ -760,7 +760,7 @@ def decision_usando_desvio(output_len, input_len, desvio_estandar, sigma_factor)
     print(f"Diference:{diff}")
     return diff < desvio_estandar * sigma_factor  # Adjustable if the difference is less than the standard deviation adjusted by the factor
 
-def rescue_function(output_T1, output_T2, len_input_T1, desvio_estandar=22, sigma_factor= 2):
+def rescue_function(output_T1, output_T2, len_input_T1, desvio_estandar=132, sigma_factor= 2):
     len_T1_diff = abs(len(output_T1) - len_input_T1)
     len_T2_diff = abs(len(output_T2) - len_input_T1)
 
@@ -846,7 +846,7 @@ def proceso_completo(input_str_T1, prediction, vocab_src_t1, vocab_tgt_t1, vocab
     else:
         print("\nBoth outputs are different from Input T1 length, entering 'rescue' function.")
         print("Running rescue function")
-        final_output = rescue_function(decodificado_T1, texto_limpio_T2, largo_input_T1, 22, sigma_factor)
+        final_output = rescue_function(decodificado_T1, texto_limpio_T2, largo_input_T1, 132, sigma_factor)
 
     # Checking and correcting parentheses
     final_output = chequeo_match_de_parentesis(final_output)
