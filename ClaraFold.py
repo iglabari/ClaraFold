@@ -272,20 +272,107 @@ def make_model(
             nn.init.xavier_uniform_(p)
     return model
 
-def greedy_decode(model, src, src_mask, max_len, start_symbol):
+
+def length_constrained_decode(model, src, src_mask, src_length, start_symbol, end_symbol, pad_symbol, vocab_tgt):
+
     memory = model.encode(src, src_mask)
+    # Inicializar con el token de inicio
     ys = torch.zeros(1, 1).fill_(start_symbol).type_as(src.data)
-    for i in range(max_len - 1):
+    
+    # Crear un diccionario inverso para acceder a los tokens por ID
+    vocab_dict = {i: token for i, token in enumerate(vocab_tgt.get_itos())}
+    
+    # Tokens especiales
+    special_tokens = [start_symbol, end_symbol, pad_symbol]
+    
+    # Inicializar contador de caracteres generados
+    generated_length = 0
+    
+    # Almacenar secuencia de tokens generados (para debugging)
+    generated_tokens = []
+    
+    # Establecer un límite de iteraciones para evitar bucles infinitos
+    max_iterations = 1000
+    iterations = 0
+    
+    while generated_length < src_length and iterations < max_iterations:
+        iterations += 1
+        
         out = model.decode(
             memory, src_mask, ys, subsequent_mask(ys.size(1)).type_as(src.data)
         )
+        
+        # Obtener la distribución de probabilidad para el siguiente token
         prob = model.generator(out[:, -1])
-        _, next_word = torch.max(prob, dim=1)
-        next_word = next_word.data[0]
-        ys = torch.cat(
-            [ys, torch.zeros(1, 1).type_as(src.data).fill_(next_word)], dim=1
-        )
+        
+        # Si estamos a un solo carácter de completar la longitud requerida
+        if src_length - generated_length == 1:
+            # Como no hay tokens de un carácter, terminamos aquí y ajustamos después
+            print("Only one character is missing. Decoding is ending and will be adjusted later..")
+            ys = torch.cat([ys, torch.zeros(1, 1).type_as(src.data).fill_(end_symbol)], dim=1)
+            generated_tokens.append((end_symbol, vocab_dict.get(end_symbol, ""), 0))
+            break
+        else:
+            # Seleccionar el token más probable
+            _, next_word = torch.max(prob, dim=1)
+            next_word = next_word.item()
+            print(f"Generated token: {next_word} ({vocab_tgt.get_itos()[next_word]})")
+            print(f"Generated length: {generated_length}, Target length: {src_length}")
+        
+        # Obtener la representación del token y su longitud
+        token_str = vocab_dict.get(next_word, "")
+        # Calcular la longitud real (sin tokens especiales)
+        token_length = len(eliminar_tokens_especiales(token_str))
+        
+        # Verificar si al agregar este token superaríamos la longitud deseada
+        if generated_length + token_length > src_length:
+            # Buscar un token que complete exactamente la longitud
+            remaining_length = src_length - generated_length
+            suitable_token = None
+            
+            # Buscar entre los tokens más probables uno que tenga la longitud exacta requerida
+            top_k_values, top_k_indices = torch.topk(prob[0], k=min(100, prob.size(1)))
+            for idx in top_k_indices:
+                idx_token = idx.item()
+                if idx_token in special_tokens:
+                    continue
+                token_text = vocab_dict.get(idx_token, "")
+                clean_length = len(eliminar_tokens_especiales(token_text))
+                if clean_length == remaining_length:
+                    suitable_token = idx_token
+                    break
+            
+            # Si encontramos un token adecuado, usarlo
+            if suitable_token is not None:
+                next_word = suitable_token
+                print(f"Generated token: {next_word} ({vocab_tgt.get_itos()[next_word]})")
+                print(f"Generated length: {generated_length}, Target length: {src_length}")
+            else:
+                # En última instancia, forzar el token de fin
+                next_word = end_symbol
+                
+        # Agregar el token seleccionado a la secuencia
+        ys = torch.cat([ys, torch.zeros(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+        generated_tokens.append((next_word, vocab_dict.get(next_word, ""), token_length))
+        
+        # Actualizar la longitud generada si no es un token especial
+        if next_word not in special_tokens:
+            generated_length += token_length
+            
+        # Si ya alcanzamos la longitud exacta y el último token no es el de fin, agregar token de fin
+        if generated_length == src_length and next_word != end_symbol:
+            ys = torch.cat([ys, torch.zeros(1, 1).type_as(src.data).fill_(end_symbol)], dim=1)
+            generated_tokens.append((end_symbol, vocab_dict.get(end_symbol, ""), 0))
+            break
+    
+    # Verificar si se alcanzó el límite de iteraciones
+    if iterations >= max_iterations:
+        print("¡Advertencia! Se alcanzó el número máximo de iteraciones.")
+        # Forzar finalización con token de fin
+        ys = torch.cat([ys, torch.zeros(1, 1).type_as(src.data).fill_(end_symbol)], dim=1)
+    
     return ys
+
 
 ################
 
@@ -380,6 +467,11 @@ def decodificar_resultado(secuencia_codificada):
     return decodificado
 
 
+# Function to remove special tokens and spaces
+def eliminar_tokens_especiales(texto):
+    """Removes special tokens and spaces from the text."""
+    return texto.replace(" ", "").replace("<s>", "").replace("</s>", "").replace("<blank>", "")
+
 
 # Define the two kinds of tokenization
 
@@ -431,54 +523,6 @@ class SimpleSpacy_T1:
 
         return tokens
 
-
-class SimpleSpacy_T2:
-    def __init__(self):
-        pass
-
-    def tokenize(self, text):
-        text = text.strip()  # Remove leading/trailing whitespace including newlines
-        tokens = []
-        start = 0
-        groups = [('(', 2), ('.', 2), (')', 2), ('<', 2), ('>', 2), ('{', 2), ('}', 2)]
-
-        while start < len(text):
-            found_group = False
-            for group, min_length in groups:
-                if start < len(text) and text[start] in group:
-                    end = start + 1
-                    while end < len(text) and text[end] in group:
-                        end += 1
-
-                    if end - start >= min_length:
-                        new_token = text[start:end]
-                        if not tokens:
-                            tokens.append(new_token)
-                        elif tokens[-1] in group:
-                            tokens[-1] += new_token
-                        else:
-                            tokens.append(new_token)
-
-                        start = end
-                        found_group = True
-                        break
-
-            if not found_group:
-                if len(tokens) > 0 and tokens[-1] != ' ':
-                    tokens[-1] += text[start]
-                elif text[start] != ' ':
-                    tokens.append(text[start])
-                start += 1
-
-        i = 0
-        while i < len(tokens) - 1:
-            if len(tokens[i]) == 1 and tokens[i] != ' ':
-                tokens[i+1] = tokens[i] + tokens[i+1]
-                tokens.pop(i)
-            else:
-                i += 1
-
-        return tokens
 
 
 def count_pseudoKnots(sequence):
@@ -546,338 +590,535 @@ def chequeo_match_de_parentesis(sequence):
 
 # 2. Function to run the model
 
-def run_model_example(input_str, vocab_src, vocab_tgt, model_path, device='cpu', transformer_type='T1'):
-    if transformer_type == 'T1':
-        tokenizer = SimpleSpacy_T1()
-    elif transformer_type == 'T2':
-        tokenizer = SimpleSpacy_T2()
+def run_model_example(input_str, vocab_src, vocab_tgt, model_path, device='cpu'):
+    """Run the model for prediction"""
+    # Initialize tokenizer
+    tokenizer = SimpleSpacy_T1()
 
     # Tokenize the input
     tokenized_input = tokenizer.tokenize(input_str)
     print("Model Input: ", tokenized_input)
+    
+    # Original input length without spaces
+    input_length = len(input_str.replace(" ", ""))
+    print(f"Original input length (without spaces): {input_length}")
 
     # Convert tokens to ids
     src_tokens = [vocab_src.get_stoi().get(token, vocab_src.get_stoi()['<unk>']) for token in tokenized_input]
 
-    # Adding the special tokens
+    # Add special tokens
     start_symbol = vocab_tgt.get_stoi()['<s>']
-    src_tokens = [start_symbol] + src_tokens + [vocab_src.get_stoi()['</s>']]
+    end_symbol = vocab_tgt.get_stoi()['</s>']
+    pad_symbol = vocab_tgt.get_stoi()['<blank>']
+    src_tokens = [start_symbol] + src_tokens + [end_symbol]
 
     # Convert to tensor
     src_tensor = torch.tensor(src_tokens).unsqueeze(0).to(device)
 
-    # Create a mask
+    # Create mask
     src_mask = (src_tensor != vocab_src.get_stoi()['<blank>']).unsqueeze(-2)
 
-    # Load the model
     print("Loading Trained Model ...")
     model = make_model(len(vocab_src), len(vocab_tgt), N=6)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
-    model.eval()  # Evaluation mode
-    #print(f"Model loaded in {model.training} mode")
+    model.eval()
+    print(f"Model loaded in {model.training} mode")
 
-    # Generate the prediction
+    # Generate prediction
+    
     with torch.no_grad():
-        model_output = greedy_decode(model, src_tensor, src_mask, max_len=330, start_symbol=start_symbol)
+       model_output = length_constrained_decode(
+           model, 
+           src_tensor, 
+           src_mask, 
+           input_length,  # Longitud exacta que debe tener en caracteres
+           start_symbol,
+           end_symbol,
+           pad_symbol,
+           vocab_tgt  # Pasar el vocabulario completo
+       )
 
     # Convert prediction to text
-    model_text = ' '.join([vocab_tgt.get_itos()[token] for token in model_output[0].tolist() if token != vocab_tgt.get_stoi()['<blank>']])
-    model_text = model_text.split('</s>', 1)[0] + '</s>'  # Truncate after token </s>
+    model_text = ' '.join([vocab_tgt.get_itos()[token] for token in model_output[0].tolist() if token != pad_symbol])
 
     print("Model Output: ", model_text)
+    
+    # Remove spaces and special tokens to verify length
+    texto_limpio = eliminar_tokens_especiales(model_text)
+    print(f"Output length: {len(texto_limpio)}")
+    
+    # Verify lengths match
+    if len(texto_limpio) != input_length:
+        print(f"WARNING! Lengths do not match: Input={input_length}, Output={len(texto_limpio)}")
+        
+        # Adjust length if exactly one character is missing
+        if len(texto_limpio) == input_length - 1:
+            print("Adding the character 'I' to complete the exact length")
+            texto_limpio += 'I'
+            print(f"New output length: {len(texto_limpio)}")
+            # Recreate model_text with added character
+            model_text += ' I'
+            print("Adjusted Model Output: ", model_text)
+    
+    print("Lengths match correctly." if len(texto_limpio) == input_length else "Lengths still do not match.")
+    
     return model_text
-
-########################################
-
-# 3. Functions for removing and adding points and for using sigm-based thresholdinga
-
-def sacar_puntitos(output, target_len):
-    """
-    Removes '.' dots evenly from dot regions within the output until the desired length is reached.
-    Respects the rules of not removing dots in regions with less than three consecutive dots and distributes the removal evenly.
-    The first and last dot regions are reserved and are not touched unless necessary.
-    """
-    zonas_puntitos = [match.span() for match in re.finditer(r'\.{3,}', output)]  # Find the areas with 3 or more dots
-    total_puntitos_a_sacar = len(output) - target_len  # Dots to be removed
-
-    if len(zonas_puntitos) > 2:
-        # Reserve the first and last dotted area
-        zonas_reservadas = [zonas_puntitos[0], zonas_puntitos[-1]]
-        zonas_intermedias = zonas_puntitos[1:-1]
-    else:
-        # If there are only one or two areas, we do not reserve any.
-        zonas_reservadas = []
-        zonas_intermedias = zonas_puntitos
-
-    while total_puntitos_a_sacar > 0 and zonas_intermedias:
-        # Calculate how many points can be taken from each intermediate zone in this round
-        puntitos_disponibles = [max(0, (end - start) - 2) for start, end in zonas_intermedias]
-        total_disponibles = sum(puntitos_disponibles)
-
-        if total_disponibles == 0:
-            break  # There are no more points to take away
-
-        # Distribute the points to be drawn equally
-        puntitos_a_sacar_por_zona = [
-            min(
-                max(1, round(total_puntitos_a_sacar * disponibles / total_disponibles)),
-                disponibles
-            ) if disponibles > 0 else 0
-            for disponibles in puntitos_disponibles
-        ]
-
-        # Make sure you don't get more points than necessary
-        while sum(puntitos_a_sacar_por_zona) > total_puntitos_a_sacar:
-            max_index = puntitos_a_sacar_por_zona.index(max(puntitos_a_sacar_por_zona))
-            puntitos_a_sacar_por_zona[max_index] -= 1
-
-        # Apply dot removal
-        nuevo_output = []
-        ultimo_fin = 0
-        for (start, end), puntitos_a_sacar in zip(zonas_intermedias, puntitos_a_sacar_por_zona):
-            nuevo_output.append(output[ultimo_fin:start])
-            zona_puntitos = output[start:end]
-            if puntitos_a_sacar > 0:
-                # Select the dot indices to be removed uniformly
-                indices_a_mantener = sorted(set(range(len(zona_puntitos))) - set(
-                    sorted(range(1, len(zona_puntitos) - 1))[::max(1, (len(zona_puntitos) - 2) // puntitos_a_sacar)][:puntitos_a_sacar]
-                ))
-                nuevo_output.append(''.join(zona_puntitos[i] for i in indices_a_mantener))
-            else:
-                nuevo_output.append(zona_puntitos)
-            ultimo_fin = end
-        nuevo_output.append(output[ultimo_fin:])
-
-        output = ''.join(nuevo_output)
-        total_puntitos_a_sacar -= sum(puntitos_a_sacar_por_zona)
-
-        # Update the intermediate zones
-        zonas_intermedias = [match.span() for match in re.finditer(r'\.{3,}', output)][1:-1]
-
-    # If necessary, touch the reserved areas
-    if total_puntitos_a_sacar > 0 and zonas_reservadas:
-        # Repeat the process for reserved areas if necessary.
-        for start, end in zonas_reservadas:
-            if total_puntitos_a_sacar <= 0:
-                break
-            nuevo_output = []
-            ultimo_fin = 0
-            zona_puntitos = output[start:end]
-            puntitos_a_sacar = min(total_puntitos_a_sacar, len(zona_puntitos) - 2)
-            if puntitos_a_sacar > 0:
-                indices_a_mantener = sorted(set(range(len(zona_puntitos))) - set(
-                    sorted(range(1, len(zona_puntitos) - 1))[::max(1, (len(zona_puntitos) - 2) // puntitos_a_sacar)][:puntitos_a_sacar]
-                ))
-                nuevo_output.append(output[ultimo_fin:start])
-                nuevo_output.append(''.join(zona_puntitos[i] for i in indices_a_mantener))
-                ultimo_fin = end
-                total_puntitos_a_sacar -= puntitos_a_sacar
-            nuevo_output.append(output[ultimo_fin:])
-            output = ''.join(nuevo_output)
-
-    return output
-
-
-def agregar_puntitos(output, target_len):
-    """
-    Adds '.' dots evenly across the dotted areas within the output until the desired length is reached.
-    Only extends areas that have more than two dots.
-    The first and last dotted areas are reserved and are not touched unless necessary.
-    """
-    zonas_puntitos = [match.span() for match in re.finditer(r'\.{3,}', output)]  # Find the areas with 3 or more dots
-    total_puntitos_a_agregar = target_len - len(output)  # Points to be added
-
-    if len(zonas_puntitos) > 2:
-        # Reserve the first and last dotted area
-        zonas_reservadas = [zonas_puntitos[0], zonas_puntitos[-1]]
-        zonas_intermedias = zonas_puntitos[1:-1]
-    else:
-        # If there are only one or two areas, we do not reserve any.
-        zonas_reservadas = []
-        zonas_intermedias = zonas_puntitos
-
-    while total_puntitos_a_agregar > 0 and zonas_intermedias:
-        # Calculate how many dots can be added to each intermediate zone
-        puntitos_disponibles = [(end - start) for start, end in zonas_intermedias]
-        total_disponibles = sum(puntitos_disponibles)
-
-        # If there are no available zones, we leave
-        if total_disponibles == 0:
-            break
-
-        # Distribute the points to be added evenly
-        puntitos_a_agregar_por_zona = [
-            min(
-                max(1, round(total_puntitos_a_agregar * disponibles / total_disponibles)),
-                disponibles
-            ) if disponibles > 0 else 0
-            for disponibles in puntitos_disponibles
-        ]
-
-        # Make sure not to add more dots than necessary
-        while sum(puntitos_a_agregar_por_zona) > total_puntitos_a_agregar:
-            max_index = puntitos_a_agregar_por_zona.index(max(puntitos_a_agregar_por_zona))
-            puntitos_a_agregar_por_zona[max_index] -= 1
-
-        # Apply dot addition
-        nuevo_output = []
-        ultimo_fin = 0
-        for (start, end), puntitos_a_agregar in zip(zonas_intermedias, puntitos_a_agregar_por_zona):
-            nuevo_output.append(output[ultimo_fin:start])
-            zona_puntitos = output[start:end]
-            if puntitos_a_agregar > 0:
-                # Insert dots in the middle of the area
-                mid_point = (start + end) // 2
-                zona_puntitos = zona_puntitos[:mid_point - start] + '.' * puntitos_a_agregar + zona_puntitos[mid_point - start:]
-            nuevo_output.append(zona_puntitos)
-            ultimo_fin = end
-        nuevo_output.append(output[ultimo_fin:])
-
-        output = ''.join(nuevo_output)
-        total_puntitos_a_agregar -= sum(puntitos_a_agregar_por_zona)
-
-        # Update the intermediate zones
-        zonas_intermedias = [match.span() for match in re.finditer(r'\.{3,}', output)][1:-1]
-
-    # If necessary, touch the reserved areas
-    if total_puntitos_a_agregar > 0 and zonas_reservadas:
-        for start, end in zonas_reservadas:
-            if total_puntitos_a_agregar <= 0:
-                break
-            zona_puntitos = output[start:end]
-            puntitos_a_agregar = min(total_puntitos_a_agregar, end - start)
-            mid_point = (start + end) // 2
-            output = output[:mid_point] + '.' * puntitos_a_agregar + output[mid_point:]
-            total_puntitos_a_agregar -= puntitos_a_agregar
-
-    return output
-
-
-# Threshold based on standard deviation
-def decision_usando_desvio(output_len, input_len, desvio_estandar, sigma_factor):
-    diff = abs(output_len - input_len)
-    print(f"Diference:{diff}")
-    return diff < desvio_estandar * sigma_factor  # Adjustable if the difference is less than the standard deviation adjusted by the factor
-
-def rescue_function(output_T1, output_T2, len_input_T1, desvio_estandar=132, sigma_factor= 2):
-    len_T1_diff = abs(len(output_T1) - len_input_T1)
-    len_T2_diff = abs(len(output_T2) - len_input_T1)
-
-    # Selecting the closest output
-    if len_T1_diff <= len_T2_diff:
-        print(f"Output T1 is closer to input length. Selected Output T1.")
-        final_output = output_T1
-        diff = len_T1_diff
-    else:
-        print(f"Output T2 is closer to input length. Selected Output T2.")
-        final_output = output_T2
-        diff = len_T2_diff
-
-    # Check if the difference is less than the standard deviation
-    if decision_usando_desvio(len(final_output), len_input_T1, desvio_estandar, sigma_factor):
-        print(f"Difference is within the threshold based on {sigma_factor}x standard deviation ({desvio_estandar * sigma_factor}). Proceeding to adjust output.")
-        # Call the adjustment functions (add or remove points as appropriate)
-        if len(final_output) > len_input_T1:
-            print("Final output is greater than input, running 'sacar_puntitos'")
-            return sacar_puntitos(final_output, len_input_T1)
-        elif len(final_output) < len_input_T1:
-            print("Final output is shorter than input, running 'agregar_puntitos'")
-            return agregar_puntitos(final_output, len_input_T1)
-        else:
-            return final_output
-    else:
-        print(f"Difference exceeds {sigma_factor}x standard deviation threshold ({desvio_estandar * sigma_factor}).")
 
 
 ##########################################
 
-# 4. Function for the complete process
-
-def proceso_completo(input_str_T1, prediction, vocab_src_t1, vocab_tgt_t1, vocab_src_t2, vocab_tgt_t2, model_T1_path, model_T2_path, device='cpu'):
-    # Print the original input
-    print(f"Encoded Input: \n{input_str_T1}")
-    largo_input_T1 = len(input_str_T1)
+def find_base_pairs(structure):
+    """
+    Encuentra todos los pares de bases en una estructura RNA.
     
-    print("\nRunning first transformer (T1):")
-    # Execution of the first model (T1)
-    predicted_text_T1 = run_model_example(input_str_T1, vocab_src_t1, vocab_tgt_t1, model_T1_path, device, transformer_type='T1')
+    Args:
+        structure (str): Estructura RNA en notación de paréntesis
+    
+    Returns:
+        dict: Diccionario con pares regulares '()' y pseudoknots '<>'
+    """
+    regular_pairs = []  # Pares '()'
+    pseudoknot_pairs = []  # Pares '<>'
+    
+    # Encontrar pares '()'
+    stack = []
+    for i, char in enumerate(structure):
+        if char == '(':
+            stack.append(i)
+        elif char == ')':
+            if stack:
+                regular_pairs.append((stack.pop(), i))
+    
+    # Encontrar pares '<>'
+    stack = []
+    for i, char in enumerate(structure):
+        if char == '<':
+            stack.append(i)
+        elif char == '>':
+            if stack:
+                pseudoknot_pairs.append((stack.pop(), i))
+    
+    return {'regular': regular_pairs, 'pseudoknot': pseudoknot_pairs}
 
-    # Clear output of T1
-    texto_limpio_T1 = eliminar_espacios_y_tokens(predicted_text_T1)
-    largo_output_T1 = len(texto_limpio_T1)
+####aca
 
-    # Decoding
-    decodificado_T1 = decodificar_resultado(texto_limpio_T1)  # Decodificado de 28 a 7 símbolos
+def combine_structures_direct(probknot_structure, clarafold_structure):
+    """
+    Método directo para combinar estructuras de RNA preservando los pseudonudos de ClaraFold
+    mientras mantiene la mayor cantidad posible de pares regulares de ProbKnot.
+    Preserva bloques completos de pseudonudos incluyendo puntos intermedios.
+    Si ClaraFold no contiene pseudonudos, elimina todos los pseudonudos de ProbKnot.
+    
+    Args:
+        probknot_structure (str): Estructura de ProbKnot
+        clarafold_structure (str): Estructura de ClaraFold con pseudonudos
+        
+    Returns:
+        str: Estructura combinada con pseudonudos preservados o eliminados según corresponda
+    """
+    # Verificar longitudes
+    if len(probknot_structure) != len(clarafold_structure):
+        raise ValueError("Las estructuras deben tener la misma longitud")
+    
+    # Verificar si ClaraFold tiene pseudonudos
+    has_pseudoknots_clarafold = '<' in clarafold_structure or '>' in clarafold_structure
+    
+    # Eliminar siempre todos los pseudonudos de ProbKnot (representados con '<>', '{}')
+    probknot_no_pseudoknots = ''.join(['.' if char in '<>{}' else char for char in probknot_structure])
+    # Si ClaraFold no tiene pseudonudos, retornar ProbKnot sin pseudonudos
+    if not has_pseudoknots_clarafold:
+        return probknot_no_pseudoknots
+    
+    # Identificar bloques de pseudonudos en ClaraFold
+    pseudoknot_blocks = identify_pseudoknot_blocks(clarafold_structure)
+    
+    # Inicializar con la estructura de ProbKnot sin pseudonudos
+    combined = list(probknot_no_pseudoknots)
+    
+    # Marcar todas las posiciones que forman parte de bloques de pseudonudos
+    pseudoknot_positions = set()
+    for start, end in pseudoknot_blocks:
+        for pos in range(start, end + 1):
+            pseudoknot_positions.add(pos)
+    
+    # Insertar los bloques completos de pseudonudos de ClaraFold
+    for start, end in pseudoknot_blocks:
+        for pos in range(start, end + 1):
+            combined[pos] = clarafold_structure[pos]
+    
+    # Identificar pares de bases regulares en ProbKnot
+    regular_pairs = []
+    regular_stack = []
+    
+    for i, char in enumerate(probknot_structure):
+        if char == '(':
+            regular_stack.append(i)
+        elif char == ')':
+            if regular_stack:
+                open_pos = regular_stack.pop()
+                regular_pairs.append((open_pos, i))
+    
+    # Revisar y reparar inconsistencias causadas por pseudonudos
+    for open_pos, close_pos in regular_pairs:
+        # Si un par regular tiene una posición ya ocupada por un pseudonudo o punto dentro de un bloque,
+        # necesitamos eliminar ambos extremos del par regular
+        if open_pos in pseudoknot_positions or close_pos in pseudoknot_positions:
+            # Solo eliminar si no fueron ya reemplazados por el bloque de pseudonudos
+            if combined[open_pos] == '(':
+                combined[open_pos] = '.'
+            if combined[close_pos] == ')':
+                combined[close_pos] = '.'
+    
+    # Verificar si hay pseudonudos sin emparejar después de la combinación
+    return fix_pairing_issues(''.join(combined))
 
-    # Execution of the second model (T2) with the decoding of T1
-    print("\nRunning second transformer (T2):")
-    predicted_text_T2 = run_model_example(decodificado_T1, vocab_src_t2, vocab_tgt_t2, model_T2_path, device, transformer_type='T2')
+def identify_pseudoknot_blocks(structure):
+    """
+    Identifica bloques continuos que contienen pseudonudos, incluyendo puntos intermedios.
+    Un bloque comienza con el primer '<' o '>' y termina cuando hay una secuencia
+    de al menos 2 caracteres que no son '<', '>' ni puntos.
+    
+    Args:
+        structure (str): Estructura RNA
+        
+    Returns:
+        list: Lista de tuplas (inicio, fin) de cada bloque de pseudonudos
+    """
+    blocks = []
+    i = 0
+    length = len(structure)
+    
+    while i < length:
+        # Buscar el inicio de un bloque (primer '<' o '>')
+        if structure[i] in '<>':
+            start = i
+            # Avanzar mientras encontremos '<', '>' o puntos
+            # con no más de 1 punto consecutivo entre símbolos de pseudonudos
+            consecutive_dots = 0
+            last_pseudoknot_pos = i
+            
+            while i < length:
+                if structure[i] in '<>':
+                    consecutive_dots = 0
+                    last_pseudoknot_pos = i
+                elif structure[i] == '.':
+                    consecutive_dots += 1
+                    # Si hay más de 1 punto consecutivo y estamos lejos del último pseudonudo,
+                    # consideramos que es el fin del bloque
+                    if consecutive_dots > 1 and (i - last_pseudoknot_pos) > 1:
+                        break
+                else:
+                    # Si encontramos otro carácter, es el fin del bloque
+                    break
+                i += 1
+            
+            # El fin del bloque es la última posición de pseudonudo encontrada
+            end = last_pseudoknot_pos
+            
+            # Solo guardar bloques que tengan al menos un pseudonudo
+            if start <= end:
+                blocks.append((start, end))
+        else:
+            i += 1
+            
+    return blocks
 
-    # Clear output of T2
-    texto_limpio_T2 = eliminar_espacios_y_tokens(predicted_text_T2)
-    largo_output_T2 = len(texto_limpio_T2)
+def fix_pairing_issues(structure):
+    """
+    Corrige problemas de emparejamiento en la estructura.
+    Asegura que todos los paréntesis y pseudonudos estén correctamente emparejados.
+    
+    Args:
+        structure (str): Estructura a verificar y corregir
+        
+    Returns:
+        str: Estructura corregida
+    """
+    # Manejar pares regulares
+    result = list(structure)
+    
+    # Verificar pares regulares
+    regular_stack = []
+    for i, char in enumerate(structure):
+        if char == '(':
+            regular_stack.append(i)
+        elif char == ')':
+            if regular_stack:
+                regular_stack.pop()
+            else:
+                result[i] = '.'  # Cerrar sin abrir
+    
+    for pos in regular_stack:
+        result[pos] = '.'  # Abrir sin cerrar
+    
+    # Verificar pseudonudos
+    pk_stack = []
+    for i, char in enumerate(''.join(result)):
+        if char == '<':
+            pk_stack.append(i)
+        elif char == '>':
+            if pk_stack:
+                pk_stack.pop()
+            else:
+                result[i] = '.'  # Cerrar sin abrir
+    
+    for pos in pk_stack:
+        result[pos] = '.'  # Abrir sin cerrar
+    
+    return ''.join(result)
 
-    # Summary of results
+def extract_pseudoknot_groups(structure):
+    """
+    Extrae grupos consecutivos de pseudonudos de una estructura.
+    
+    Args:
+        structure (str): Estructura de RNA
+        
+    Returns:
+        list: Lista de tuplas (inicio, fin, contenido) de cada grupo
+    """
+    groups = []
+    in_group = False
+    start = 0
+    group_content = ""
+    
+    for i, char in enumerate(structure):
+        if char in '<>' and not in_group:
+            in_group = True
+            start = i
+            group_content = char
+        elif char in '<>' and in_group:
+            group_content += char
+        elif char not in '<>' and in_group:
+            if len(group_content) > 0:  # Solo guardar si hay contenido real
+                groups.append((start, i-1, group_content))
+            in_group = False
+            group_content = ""
+    
+    # Añadir el último grupo si estamos dentro de uno
+    if in_group and len(group_content) > 0:
+        groups.append((start, len(structure)-1, group_content))
+    
+    return groups
 
+def count_pseudoknots(structure):
+    """
+    Cuenta el número de pseudonudos en una estructura de ARN, manejando tanto símbolos '<>' como '{}'
+    y permitiendo puntos y otros caracteres entre los símbolos de apertura y cierre.
+    Esta versión maneja correctamente pseudonudos entrelazados.
+    
+    Args:
+        structure (str): String de estructura de ARN
+        
+    Returns:
+        tuple: (número de pseudonudos, lista de pseudonudos encontrados)
+    """
+    # Identificar bloques de pseudonudos
+    angle_blocks = identify_pseudoknot_sequences(structure, '<', '>')
+    curly_blocks = identify_pseudoknot_sequences(structure, '{', '}')
+    
+    # Lista para almacenar pseudonudos completos identificados
+    pseudoknots = []
+    pseudoknot_count = 0
+    
+    # Procesar bloques de tipo ángulo '<>'
+    matched_pseudoknots = match_pseudoknot_blocks(structure, angle_blocks['open'], angle_blocks['close'])
+    pseudoknots.extend(matched_pseudoknots)
+    pseudoknot_count += len(matched_pseudoknots)
+    
+    # Procesar bloques de tipo llave '{}'
+    matched_pseudoknots = match_pseudoknot_blocks(structure, curly_blocks['open'], curly_blocks['close'])
+    pseudoknots.extend(matched_pseudoknots)
+    pseudoknot_count += len(matched_pseudoknots)
+    
+    return pseudoknot_count, pseudoknots
+
+def identify_pseudoknot_sequences(structure, open_char, close_char):
+    """
+    Identifica secuencias de símbolos de apertura y cierre, incluyendo puntos intermedios.
+    
+    Args:
+        structure (str): String de estructura de ARN
+        open_char (str): Carácter de apertura ('<' o '{')
+        close_char (str): Carácter de cierre ('>' o '}')
+        
+    Returns:
+        dict: Diccionario con listas de bloques de apertura y cierre
+    """
+    open_blocks = []  # Lista para almacenar bloques de apertura
+    close_blocks = []  # Lista para almacenar bloques de cierre
+    
+    i = 0
+    while i < len(structure):
+        # Buscar secuencias de apertura
+        if structure[i] == open_char:
+            start = i
+            count = 0  # Contar símbolos de apertura en este bloque
+            
+            while i < len(structure) and (structure[i] == open_char or structure[i] == '.'):
+                if structure[i] == open_char:
+                    count += 1
+                i += 1
+            
+            # Solo guardamos bloques que tengan al menos un símbolo de apertura
+            if count > 0:
+                open_blocks.append({
+                    'start': start,
+                    'end': i - 1,
+                    'count': count,
+                    'sequence': structure[start:i]
+                })
+                continue  # Continuamos desde la posición actual
+        
+        # Buscar secuencias de cierre
+        elif structure[i] == close_char:
+            start = i
+            count = 0  # Contar símbolos de cierre en este bloque
+            
+            while i < len(structure) and (structure[i] == close_char or structure[i] == '.'):
+                if structure[i] == close_char:
+                    count += 1
+                i += 1
+            
+            # Solo guardamos bloques que tengan al menos un símbolo de cierre
+            if count > 0:
+                close_blocks.append({
+                    'start': start,
+                    'end': i - 1,
+                    'count': count,
+                    'sequence': structure[start:i]
+                })
+                continue  # Continuamos desde la posición actual
+        
+        i += 1
+    
+    return {'open': open_blocks, 'close': close_blocks}
+
+def match_pseudoknot_blocks(structure, open_blocks, close_blocks):
+    """
+    Empareja bloques de apertura y cierre para identificar pseudonudos completos.
+    
+    Args:
+        structure (str): String de estructura de ARN
+        open_blocks (list): Lista de bloques de apertura
+        close_blocks (list): Lista de bloques de cierre
+        
+    Returns:
+        list: Lista de pseudonudos identificados
+    """
+    matched_pseudoknots = []
+    
+    # Ordenar bloques por número de símbolos (descendente)
+    open_blocks = sorted(open_blocks, key=lambda x: x['count'], reverse=True)
+    close_blocks = sorted(close_blocks, key=lambda x: x['count'], reverse=True)
+    
+    # Hacer copia para marcar los que ya se han usado
+    remaining_open = open_blocks.copy()
+    remaining_close = close_blocks.copy()
+    
+    # Emparejar bloques de apertura y cierre con el mismo número de símbolos
+    for open_block in open_blocks:
+        for close_block in close_blocks:
+            # Solo emparejar si:
+            # 1. Ambos bloques tienen el mismo número de símbolos
+            # 2. El bloque de cierre está después del bloque de apertura
+            # 3. Ninguno de los dos bloques ha sido emparejado ya
+            if (open_block['count'] == close_block['count'] and 
+                close_block['start'] > open_block['end'] and
+                open_block in remaining_open and 
+                close_block in remaining_close):
+                
+                # Crear el pseudonudo y añadirlo a la lista
+                pseudoknot = structure[open_block['start']:close_block['end'] + 1]
+                matched_pseudoknots.append(pseudoknot)
+                
+                # Marcar estos bloques como usados
+                if open_block in remaining_open:
+                    remaining_open.remove(open_block)
+                if close_block in remaining_close:
+                    remaining_close.remove(close_block)
+    
+    # Si quedan bloques sin emparejar, intentamos emparejarlos de manera óptima
+    # (por ejemplo, un bloque de apertura grande puede corresponder a varios bloques de cierre pequeños)
+    if remaining_open and remaining_close:
+        for open_block in remaining_open.copy():
+            open_count = open_block['count']
+            matching_closes = []
+            total_close_count = 0
+            
+            # Buscar combinación de bloques de cierre que sumen el mismo número de símbolos
+            for close_block in sorted(remaining_close, key=lambda x: x['start']):
+                if close_block['start'] > open_block['end'] and total_close_count < open_count:
+                    matching_closes.append(close_block)
+                    total_close_count += close_block['count']
+                    
+                    # Si encontramos suficientes símbolos de cierre
+                    if total_close_count == open_count:
+                        # Determinar el rango completo del pseudonudo
+                        last_close = matching_closes[-1]
+                        pseudoknot = structure[open_block['start']:last_close['end'] + 1]
+                        matched_pseudoknots.append(pseudoknot)
+                        
+                        # Marcar bloques como usados
+                        remaining_open.remove(open_block)
+                        for c in matching_closes:
+                            if c in remaining_close:
+                                remaining_close.remove(c)
+                        break
+    
+    return matched_pseudoknots
+
+def proceso_completo(input_sequence, input_prediction, vocab_src, vocab_tgt, model_path, device='cpu'):
+    """
+    Complete process for sequence and prediction with structure combination
+    
+    Args:
+    input_sequence (str): RNA sequence
+    input_prediction (str): Original structure prediction
+    vocab_src, vocab_tgt: Vocabulary mappings
+    model_path (str): Path to the model
+    device (str): Computational device
+    
+    Returns:
+    str: Final processed RNA structure
+    """
+    # Concatenate sequence and prediction
+    resultado = concatenar_entradas(input_sequence, input_prediction)
+    
+    # Encode the result
+    input_str = codificar_resultado(resultado)
+
+    # Run model
+    predicted_text = run_model_example(input_str, vocab_src, vocab_tgt, model_path, device)
+
+    # Remove special tokens and spaces
+    texto_limpio = eliminar_tokens_especiales(predicted_text)
+
+    # Decode the result
+    decodificado = decodificar_resultado(texto_limpio)
+
+    # Usar el método directo para combinar estructuras
+    combined_structure = combine_structures_direct(input_prediction, decodificado)
+
+    # Corregir emparejamiento de paréntesis para mantener la integridad estructural
+    final_output = chequeo_match_de_parentesis(combined_structure)
+
+    # Print summary
     print("\n===== Summary =====")
-    print(f"Input 2D:  {prediction}")
-    print(f"Length Input T1: {largo_input_T1}")
-    pk_i = count_pseudoKnots(prediction)
-    print(f"Pseudoknots{pk_i}\n")
+    print(f"Input Sequence: {input_sequence}")
+    print(f"Input Predict.: {input_prediction}")
+    pseudoknots = count_pseudoKnots(input_prediction)
+    print(f"Pseudoknots: {pseudoknots}")
+    print(f"ClaraFold Pre.: {decodificado}")
+    print(f"Combinacion...: {combined_structure}")
+    #print(f"Combi.correcte: {final_output}")
+    print(f"Output Length: {len(final_output)}")
+    
+    pseudoknots = count_pseudoKnots(final_output)
+    print(f"Pseudoknots: {pseudoknots}")
 
-    print(f"Output T1: {decodificado_T1}")
-    print(f"Length Output T1: {largo_output_T1}")
-    pk_t1 = count_pseudoKnots(decodificado_T1)
-    print(f"Pseudoknots{pk_t1}\n")
-
-    print(f"Output T2: {texto_limpio_T2}")
-    print(f"Length Output T2: {largo_output_T2}")
-    pk_t2 = count_pseudoKnots(texto_limpio_T2)
-    print(f"Pseudoknots{pk_t2}")
-
-    # Implementation of the rules:
-    if largo_output_T1 == largo_input_T1:
-        print("Rule 1: Length Output T1 is equal to Length Input T1, using Output T1.")
-        final_output = decodificado_T1
-    elif largo_output_T2 == largo_input_T1:
-        print("Rule 2: Length Output T2 is equal to Length Input T1, using Output T2.")
-        final_output = texto_limpio_T2
-    else:
-        print("\nBoth outputs are different from Input T1 length, entering 'rescue' function.")
-        print("Running rescue function")
-        final_output = rescue_function(decodificado_T1, texto_limpio_T2, largo_input_T1, 132, sigma_factor)
-
-    # Checking and correcting parentheses
-    final_output = chequeo_match_de_parentesis(final_output)
-
-    # Print the corrected final result
-    print(f"Final corrected prediction: {final_output}")
-    final_output_f = len(final_output)
-    print(f"Length corrected output: {final_output_f}")
-    pk_f = count_pseudoKnots(final_output)
-    print(f"Pseudoknots{pk_f}")
     return final_output
-
-###############################################
-
-def ejecutar_proceso(sequence, prediction, sigma_factor, vocab_src_t1, vocab_tgt_t1, vocab_src_t2, vocab_tgt_t2, model_T1_path, model_T2_path, device='cpu'):
-
-    # Check that the sequence and the dot_bracket_result have the same length
-
-    assert len(sequence) == len(prediction), "The sequences are not the same length"
-
-    # Concatenate the sequence and the 2D structure
-    resultado = concatenar_entradas(sequence, prediction)
-
-    # Encode the result of concatenation
-    input_str_T1 = codificar_resultado(resultado)
-
-    # Run the full process
-    output_final = proceso_completo(input_str_T1, prediction, vocab_src_t1, vocab_tgt_t1, vocab_src_t2, vocab_tgt_t2, model_T1_path, model_T2_path, device)
-
-    return output_final
-
 
 def read_sequences_from_file(file_path):
     """
@@ -897,32 +1138,36 @@ def read_sequences_from_file(file_path):
     
     return sequences_data
 
-def process_all_sequences(file_path, sigma_factor, vocab_src_t1, vocab_tgt_t1, vocab_src_t2, vocab_tgt_t2, model_T1_path, model_T2_path):
+def process_all_sequences(file_path, vocab_src, vocab_tgt, model_path, device='cpu'):
     """
     Process all sequences in the file
+    
+    Args:
+    file_path (str): Path to input file containing sequences and predictions
+    vocab_src, vocab_tgt: Vocabulary mappings
+    model_path (str): Path to the model
+    device (str): Computational device
     """
     sequences_data = read_sequences_from_file(file_path)
 
-    # Open global files to write results
-    with open("test_results.txt", "w") as test_results_file, open("for_quantify.txt", "w") as cuantificar_file:
+    # Open files to write results
+    with open("test_results.txt", "w") as test_results_file, \
+         open("for_quantify.txt", "w") as cuantificar_file:
     
         for idx, (sequence, prediction) in enumerate(sequences_data, 1):
             print(f"\nProcessing sequence {idx}:")
             print(f"Sequence: \n{sequence}")
-            print(f"Prediction: \n{prediction}")
+            print(f"ProbKnot_prediction: \n{prediction}")
 
             # Run the process for each sequence/prediction pair
             try:
-                output_final = ejecutar_proceso(
+                output_final = proceso_completo(
                     sequence,
                     prediction,
-                    sigma_factor,
-                    vocab_src_t1,
-                    vocab_tgt_t1,
-                    vocab_src_t2,
-                    vocab_tgt_t2,
-                    model_T1_path,
-                    model_T2_path
+                    vocab_src,
+                    vocab_tgt,
+                    model_path,
+                    device
                 )
                 
                 # Save the 'final_output' to the file 'test_results.txt'
@@ -949,8 +1194,7 @@ def process_all_sequences(file_path, sigma_factor, vocab_src_t1, vocab_tgt_t1, v
             except Exception as e:
                 print(f"Error processing sequence {idx}: {str(e)}")
 
-
-# Example of use
+# Main execution
 if __name__ == "__main__":
     # Verify that the argument was provided
     if len(sys.argv) < 2:
@@ -960,22 +1204,15 @@ if __name__ == "__main__":
     
     # The first argument (sys.argv[1]) will be the name of the file
     file_path = sys.argv[1]
-    sigma_factor = 3
 
-    # 0. Load vocabularies and models
-    vocab_src_t1, vocab_tgt_t1 = torch.load("vocab_T1.pt")
-    vocab_src_t2, vocab_tgt_t2 = torch.load("vocab_T2.pt")
-    model_T1_path = "model_T1.pt"
-    model_T2_path = "model_T2.pt"
+    # 0. Load vocabulary and model
+    vocab_src, vocab_tgt = torch.load("vocab.pt")
+    model_path = "model.pt"
     
     # Process all sequences
     process_all_sequences(
         file_path,
-        sigma_factor,
-        vocab_src_t1,
-        vocab_tgt_t1,
-        vocab_src_t2,
-        vocab_tgt_t2,
-        model_T1_path,
-        model_T2_path
+        vocab_src,
+        vocab_tgt,
+        model_path
     )
