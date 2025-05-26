@@ -1199,7 +1199,7 @@ if __name__ == "__main__":
     # Verify that the argument was provided
     if len(sys.argv) < 2:
         print("Error: You must provide the file name")
-        print("Use: python full_proceso_completo.py Input.txt")
+        print("Use: python ClaraFold.py Input.txt")
         sys.exit(1)
     
     # The first argument (sys.argv[1]) will be the name of the file
