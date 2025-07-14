@@ -158,7 +158,7 @@ After a successful run, ClaraFold will generate:
 
 ## Training and evaluation (advanced use)
 
-If you would like to train ClaraFold from scratch or evaluate it on your own datasets, please refer to our companion repository: [ClaraFold-training (GitHub)](https://github.com/iglabari/ClaraFold-training.git)
+If you would like to train ClaraFold from scratch or evaluate it on your own datasets, please refer to: [ClaraFold-training (GitHub)](https://github.com/iglabari/ClaraFold/tree/main/clarafold-training-pipeline)
 
 This repository includes:
 
@@ -172,7 +172,10 @@ Please refer to the `README.md` file in the repository for detailed instructions
 
 ## Contact and citation
 
-For questions, issues, or collaboration requests, please contact [garcialabari@cifasis-conicet.gov.ar](mailto:garcialabari@cifasis-conicet.gov.ar)
+For questions, issues, or collaboration requests, please contact: 
+
+- [garcialabari@cifasis-conicet.gov.ar](mailto:garcialabari@cifasis-conicet.gov.ar)
+- [alejandrofloreslamas@cinvestav.mx](mailto:alejandrofloreslamas@cinvestav.mx)
 
 If you use ClaraFold in your work, please cite our article:
 
