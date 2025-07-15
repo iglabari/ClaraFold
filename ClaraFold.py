@@ -709,6 +709,7 @@ def combine_structures_direct(probknot_structure, clarafold_structure):
     mientras mantiene la mayor cantidad posible de pares regulares de ProbKnot.
     Preserva bloques completos de pseudonudos incluyendo puntos intermedios.
     Si ClaraFold no contiene pseudonudos, elimina todos los pseudonudos de ProbKnot.
+    Si ambas estructuras tienen la misma cantidad de pseudonudos, conserva ProbKnot tal como está.
     
     Args:
         probknot_structure (str): Estructura de ProbKnot
@@ -721,11 +722,20 @@ def combine_structures_direct(probknot_structure, clarafold_structure):
     if len(probknot_structure) != len(clarafold_structure):
         raise ValueError("Las estructuras deben tener la misma longitud")
     
+    # Contar pseudonudos en ambas estructuras
+    probknot_count, _ = count_pseudoknots(probknot_structure)
+    clarafold_count, _ = count_pseudoknots(clarafold_structure)
+    
+    # Si ambas estructuras tienen la misma cantidad de pseudonudos, conservar ProbKnot
+    if probknot_count == clarafold_count:
+        return probknot_structure
+    
     # Verificar si ClaraFold tiene pseudonudos
     has_pseudoknots_clarafold = '<' in clarafold_structure or '>' in clarafold_structure
     
     # Eliminar siempre todos los pseudonudos de ProbKnot (representados con '<>', '{}')
     probknot_no_pseudoknots = ''.join(['.' if char in '<>{}' else char for char in probknot_structure])
+    
     # Si ClaraFold no tiene pseudonudos, retornar ProbKnot sin pseudonudos
     if not has_pseudoknots_clarafold:
         return probknot_no_pseudoknots
