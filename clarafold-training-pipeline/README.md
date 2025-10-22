@@ -12,7 +12,7 @@ Key features include:
 - Recovery of missing pseudoknots
 - Removal of spurious structural artifacts
 - Scalability to RNA sequences exceeding 1,500 nucleotides
-- Outperformance classical thermodynamic methods and generalizes better than recent deep learning models
+- Achieves base-pairing accuracy comparable to thermodynamic methods and superior pseudoknot topology prediction, generalizing better than recent deep learning models
 - Integration of a novel structural dissimilarity metric for evaluation
 
 The full training pipeline implemented here covers data preparation, tokenization, vocabulary construction, model training (single and distributed), checkpoint management, and model evaluation.
